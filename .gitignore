@@ -1,0 +1,124 @@
+# -----------------------------
+# Python bytecode / extensions
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# -----------------------------
+# Build / packaging artifacts
+# -----------------------------
+build/
+dist/
+site/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# -----------------------------
+# Virtual environments
+# -----------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# -----------------------------
+# Testing / type checking / lint
+# -----------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# -----------------------------
+# Jupyter / notebooks
+# -----------------------------
+.ipynb_checkpoints/
+
+# -----------------------------
+# Logs and runtime dumps
+# -----------------------------
+*.log
+logs/
+log/
+nohup.out
+
+# -----------------------------
+# Environment / local secrets
+# -----------------------------
+.env
+.env.*
+*.local
+
+# -----------------------------
+# OS / editor clutter
+# -----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# -----------------------------
+# Experiment artifacts
+# Keep the directory structure out of Git by default; add
+# placeholder files like .gitkeep later if needed.
+# -----------------------------
+artifacts/
+runs/
+outputs/
+results/
+figures/
+checkpoints/
+tb/
+tensorboard/
+wandb/
+
+# -----------------------------
+# RL datasets / replay dumps / model weights
+# These can get very large very quickly.
+# -----------------------------
+*.npz
+*.npy
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+*.joblib
+*.parquet
+*.feather
+*.csv
+
+# -----------------------------
+# Video / media generated during evaluation
+# -----------------------------
+*.mp4
+*.gif
+videos/
+
+# -----------------------------
+# Project-specific paths from the CS4180 plan
+# -----------------------------
+artifacts/datasets/
+artifacts/runs/
+artifacts/figures/
+
+# -----------------------------
+# Optional local caches
+# -----------------------------
+.cache/
+cache/
+tmp/
+temp/
