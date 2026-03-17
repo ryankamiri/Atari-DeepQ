@@ -1,0 +1,37 @@
+# Full Pong DQN baseline template (2M steps, eval every 50k, 20 episodes).
+# Run with different seeds for 3-seed comparison.
+experiment:
+  name: pong_dqn
+  seed: 42
+  device: auto
+  output_root: artifacts
+
+env:
+  id: ALE/Pong-ram-v5
+
+model:
+  hidden_dims: [256, 256]
+
+train:
+  total_steps: 2000000
+  batch_size: 32
+  replay_capacity: 100000
+  learning_starts: 10000
+  train_freq: 4
+  gamma: 0.99
+  lr: 2.5e-4
+  target_update_interval: 1000
+  checkpoint_interval: 50000
+
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  decay_steps: 1000000
+
+eval:
+  eval_interval: 50000
+  n_episodes: 20
+  epsilon_eval: 0.05
+
+log:
+  csv_flush_interval: 10

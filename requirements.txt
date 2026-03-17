@@ -1,0 +1,10 @@
+gymnasium[atari]
+ale-py
+autorom
+numpy
+torch
+pyyaml
+tensorboard
+pandas
+tqdm
+pytest
