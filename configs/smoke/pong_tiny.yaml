@@ -1,0 +1,36 @@
+# 5-minute smoke run on Pong-ram. Exercises all artifact paths.
+experiment:
+  name: pong_tiny
+  seed: 42
+  device: auto
+  output_root: artifacts
+
+env:
+  id: ALE/Pong-ram-v5
+
+model:
+  hidden_dims: [64, 64]
+
+train:
+  total_steps: 5000
+  batch_size: 32
+  replay_capacity: 10000
+  learning_starts: 500
+  train_freq: 4
+  gamma: 0.99
+  lr: 2.5e-4
+  target_update_interval: 200
+  checkpoint_interval: 2500
+
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  decay_steps: 3000
+
+eval:
+  eval_interval: 2500
+  n_episodes: 2
+  epsilon_eval: 0.05
+
+log:
+  csv_flush_interval: 1
