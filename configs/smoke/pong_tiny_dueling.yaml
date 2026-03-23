@@ -1,9 +1,9 @@
-# 5-minute smoke run on Pong-ram. Exercises all artifact paths.
+# T1.3 smoke: dueling architecture, vanilla DQN target (no Double DQN).
 algorithm:
   double_dqn: false
 
 experiment:
-  name: pong_tiny
+  name: pong_tiny_dueling
   seed: 42
   device: auto
   output_root: artifacts
@@ -13,7 +13,7 @@ env:
 
 model:
   hidden_dims: [64, 64]
-  dueling: false
+  dueling: true
 
 train:
   total_steps: 5000

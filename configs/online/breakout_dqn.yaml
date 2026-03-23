@@ -1,44 +1,45 @@
-# 5-minute smoke run on Pong-ram. Exercises all artifact paths.
+# Full-run Breakout RAM baseline: vanilla DQN.
 algorithm:
   double_dqn: false
 
 experiment:
-  name: pong_tiny
+  name: breakout_dqn
   seed: 42
   device: auto
   output_root: artifacts
 
 env:
-  id: ALE/Pong-ram-v5
+  id: ALE/Breakout-ram-v5
 
 model:
-  hidden_dims: [64, 64]
+  hidden_dims: [256, 256]
   dueling: false
 
 train:
-  total_steps: 5000
+  total_steps: 2000000
   batch_size: 32
-  replay_capacity: 10000
-  learning_starts: 500
+  replay_capacity: 100000
+  learning_starts: 10000
   train_freq: 4
   gamma: 0.99
-  lr: 2.5e-4
-  target_update_interval: 200
-  checkpoint_interval: 2500
+  lr: 1.0e-4
+  target_update_interval: 1000
+  checkpoint_interval: 50000
   grad_clip_norm: 10.0
 
 exploration:
   epsilon_start: 1.0
   epsilon_end: 0.05
-  decay_steps: 3000
+  decay_steps: 250000
 
 eval:
-  eval_interval: 2500
-  n_episodes: 2
+  eval_interval: 50000
+  n_episodes: 20
   epsilon_eval: 0.05
 
 log:
-  csv_flush_interval: 1
+  csv_flush_interval: 10
+  episode_return_ema_alpha: 0.1
 
 replay:
   prioritized: false

@@ -1,9 +1,9 @@
-# 5-minute smoke run on Pong-ram. Exercises all artifact paths.
+# T1.4 smoke: Double DQN + dueling + proportional PER (single trainer path).
 algorithm:
-  double_dqn: false
+  double_dqn: true
 
 experiment:
-  name: pong_tiny
+  name: pong_tiny_ddqn_dueling_per
   seed: 42
   device: auto
   output_root: artifacts
@@ -13,7 +13,7 @@ env:
 
 model:
   hidden_dims: [64, 64]
-  dueling: false
+  dueling: true
 
 train:
   total_steps: 5000
@@ -41,9 +41,9 @@ log:
   csv_flush_interval: 1
 
 replay:
-  prioritized: false
+  prioritized: true
   alpha: 0.6
   beta_start: 0.4
   beta_end: 1.0
-  beta_anneal_steps: 200000
+  beta_anneal_steps: 5000
   priority_eps: 1.0e-6

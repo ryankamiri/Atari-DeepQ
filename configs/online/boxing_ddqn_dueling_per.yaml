@@ -1,28 +1,19 @@
-# Provisional full Pong RAM vanilla DQN baseline candidate.
+# Full-run Boxing RAM headline online agent: Double DQN + dueling + PER.
 algorithm:
-  double_dqn: false
+  double_dqn: true
 
-#
-# Current evidence from bounded T1.1 tuning:
-# - The tracked 200k config with lr=2.5e-4 / learning_starts=20000 / decay_steps=500000
-#   stayed flat at -21.0 by the final eval.
-# - The most promising quick candidate so far reached -20.4 at 70k steps, using
-#   lr=1e-4 / learning_starts=10000 / decay_steps=250000, but still regressed to -21.0
-#   by the end of the 100k quick run.
-#
-# Keep this config as the next full-run candidate, not a frozen winner.
 experiment:
-  name: pong_dqn
+  name: boxing_ddqn_dueling_per
   seed: 42
   device: auto
   output_root: artifacts
 
 env:
-  id: ALE/Pong-ram-v5
+  id: ALE/Boxing-ram-v5
 
 model:
   hidden_dims: [256, 256]
-  dueling: false
+  dueling: true
 
 train:
   total_steps: 2000000
@@ -51,7 +42,7 @@ log:
   episode_return_ema_alpha: 0.1
 
 replay:
-  prioritized: false
+  prioritized: true
   alpha: 0.6
   beta_start: 0.4
   beta_end: 1.0

@@ -1,15 +1,28 @@
 """
 Vanilla DQN trainer: MLP Q-network, uniform replay, target network, epsilon-greedy.
-Extensible for Double DQN, dueling, PER in later tickets.
+T1.1: Huber loss, gradient clipping, structured update metrics.
+T1.2: optional Double DQN bootstrap target via config toggle.
+T1.3: optional dueling head via ``model.dueling`` (same trainer).
+T1.4: optional PER via weighted Huber mean and ``UpdateResult.td_abs``.
 """
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 import torch.nn as nn
 
-from src.nets import MLPQNetwork
+from src.nets import DuelingMLPQNetwork, MLPQNetwork
+
+
+@dataclass
+class UpdateResult:
+    """Output of one ``DQNAgent.update`` step."""
+
+    metrics: dict[str, float]
+    td_abs: np.ndarray
 
 
 def linear_schedule(step: int, start: float, end: float, decay_steps: int) -> float:
@@ -18,6 +31,39 @@ def linear_schedule(step: int, start: float, end: float, decay_steps: int) -> fl
         return end
     t = min(1.0, step / decay_steps)
     return start + t * (end - start)
+
+
+def compute_bootstrap_target(
+    q_target_next: torch.Tensor,
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    double_dqn: bool,
+    q_online_next: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    TD bootstrap target r + gamma * (1 - d) * V(s').
+
+    Vanilla DQN: V(s') = max_a Q_target(s', a).
+    Double DQN: a* = argmax_a Q_online(s', a), V(s') = Q_target(s', a*).
+
+    Parameters
+    ----------
+    q_target_next
+        (batch, n_actions) Q-values from target network at s'.
+    rewards, dones
+        (batch,) tensors.
+    double_dqn
+        If True, ``q_online_next`` must be (batch, n_actions) from online net at s'.
+    """
+    if not double_dqn:
+        next_v = q_target_next.max(dim=1)[0]
+    else:
+        if q_online_next is None:
+            raise ValueError("double_dqn=True requires q_online_next")
+        a_star = q_online_next.argmax(dim=1, keepdim=True)
+        next_v = q_target_next.gather(1, a_star).squeeze(1)
+    return rewards + gamma * (1.0 - dones) * next_v
 
 
 class DQNAgent:
@@ -34,14 +80,21 @@ class DQNAgent:
         gamma: float = 0.99,
         lr: float = 2.5e-4,
         target_update_interval: int = 1000,
+        grad_clip_norm: float = 10.0,
+        double_dqn: bool = False,
+        dueling: bool = False,
     ):
         self.obs_dim = obs_dim
         self.n_actions = n_actions
         self.gamma = gamma
         self.target_update_interval = target_update_interval
+        self.grad_clip_norm = grad_clip_norm
+        self.double_dqn = double_dqn
+        self.dueling = dueling
         self.device = device
 
-        self.q_net = MLPQNetwork(obs_dim, n_actions, hidden_dims).to(device)
+        net_cls = DuelingMLPQNetwork if dueling else MLPQNetwork
+        self.q_net = net_cls(obs_dim, n_actions, hidden_dims).to(device)
         self.target_net = copy.deepcopy(self.q_net)
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=lr)
 
@@ -61,8 +114,16 @@ class DQNAgent:
         rewards: np.ndarray,
         next_obs: np.ndarray,
         dones: np.ndarray,
-    ) -> float:
-        """One batch gradient step. Returns mean TD loss."""
+        weights: np.ndarray | None = None,
+    ) -> UpdateResult:
+        """
+        One batch gradient step. Huber (smooth L1) per-sample loss, weighted mean if ``weights`` set.
+
+        Returns
+        -------
+        UpdateResult with ``metrics`` (loss, q_mean, target_mean, td_abs_mean) and
+        per-sample ``td_abs`` (numpy float32) for PER priority updates.
+        """
         o = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         a = torch.as_tensor(actions, dtype=torch.int64, device=self.device)
         r = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
@@ -70,16 +131,39 @@ class DQNAgent:
         d = torch.as_tensor(dones, dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
-            next_q = self.target_net(o_next).max(dim=1)[0]
-            target = r + self.gamma * (1 - d) * next_q
+            q_target_next = self.target_net(o_next)
+            if self.double_dqn:
+                q_online_next = self.q_net(o_next)
+            else:
+                q_online_next = None
+            target = compute_bootstrap_target(
+                q_target_next, r, d, self.gamma, self.double_dqn, q_online_next
+            )
 
         q = self.q_net(o).gather(1, a.unsqueeze(1)).squeeze(1)
-        loss = nn.functional.mse_loss(q, target)
+        per_sample = nn.functional.smooth_l1_loss(q, target, reduction="none")
+        if weights is not None:
+            w = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
+            loss = (per_sample * w).sum() / w.sum().clamp_min(1e-8)
+        else:
+            loss = per_sample.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
+        if self.grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), self.grad_clip_norm)
         self.optimizer.step()
-        return float(loss.item())
+
+        with torch.no_grad():
+            td_abs_t = (q.detach() - target).abs()
+            td_abs = td_abs_t.cpu().numpy().astype(np.float32)
+            metrics = {
+                "loss": float(loss.item()),
+                "q_mean": float(q.detach().mean().item()),
+                "target_mean": float(target.mean().item()),
+                "td_abs_mean": float(td_abs_t.mean().item()),
+            }
+        return UpdateResult(metrics=metrics, td_abs=td_abs)
 
     def sync_target(self):
         self.target_net.load_state_dict(self.q_net.state_dict())

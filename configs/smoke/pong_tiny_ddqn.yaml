@@ -1,9 +1,9 @@
-# 5-minute smoke run on Pong-ram. Exercises all artifact paths.
+# Smoke run with Double DQN bootstrap target (T1.2). Same budget as pong_tiny.yaml.
 algorithm:
-  double_dqn: false
+  double_dqn: true
 
 experiment:
-  name: pong_tiny
+  name: pong_tiny_ddqn
   seed: 42
   device: auto
   output_root: artifacts

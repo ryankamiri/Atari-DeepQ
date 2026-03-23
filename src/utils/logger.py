@@ -1,5 +1,6 @@
 """
 TensorBoard + CSV logging. Stable metrics CSV schema for later plotting.
+T1.1 adds Q/TD diagnostics, buffer size, episode return EMA.
 """
 from __future__ import annotations
 
@@ -16,9 +17,16 @@ CSV_COLUMNS = [
     "train_return",
     "train_episode_length",
     "loss",
+    "q_mean",
+    "target_mean",
+    "td_abs_mean",
+    "buffer_size",
+    "episode_return_moving_avg",
     "epsilon",
     "eval_mean_return",
     "eval_std_return",
+    "beta",
+    "is_weight_mean",
 ]
 
 
