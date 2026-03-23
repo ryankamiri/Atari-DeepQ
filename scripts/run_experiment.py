@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -22,7 +24,7 @@ if str(ROOT) not in sys.path:
 from src.envs import make_env
 from src.algos import DQNAgent
 from src.algos.dqn import linear_schedule
-from src.replay import ReplayBuffer
+from src.replay import PrioritizedReplayBuffer, ReplayBuffer
 from src.utils import (
     ensure_run_metadata,
     evaluate_policy,
@@ -72,6 +74,8 @@ def _base_train_row(
         "td_abs_mean": last_train["td_abs_mean"],
         "buffer_size": buffer_size,
         "episode_return_moving_avg": return_ema if return_ema is not None else "",
+        "beta": last_train.get("beta", ""),
+        "is_weight_mean": last_train.get("is_weight_mean", 1.0),
     }
     return row
 
@@ -121,7 +125,20 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     alg_cfg = config.get("algorithm") or {}
     double_dqn = bool(alg_cfg.get("double_dqn", False))
 
-    buffer = ReplayBuffer(replay_capacity, obs_shape=(obs_dim,))
+    replay_cfg = config.get("replay") or {}
+    prioritized = bool(replay_cfg.get("prioritized", False))
+    per_alpha = float(replay_cfg.get("alpha", 0.6))
+    beta_start = float(replay_cfg.get("beta_start", 0.4))
+    beta_end = float(replay_cfg.get("beta_end", 1.0))
+    beta_anneal_steps = int(replay_cfg.get("beta_anneal_steps", 200_000))
+    priority_eps = float(replay_cfg.get("priority_eps", 1e-6))
+
+    if prioritized:
+        buffer = PrioritizedReplayBuffer(
+            replay_capacity, obs_shape=(obs_dim,), alpha=per_alpha
+        )
+    else:
+        buffer = ReplayBuffer(replay_capacity, obs_shape=(obs_dim,))
     agent = DQNAgent(
         obs_dim=obs_dim,
         n_actions=n_actions,
@@ -152,7 +169,14 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     obs, _ = env.reset()
     episode_return = 0.0
     episode_length = 0
-    last_train = {"loss": 0.0, "q_mean": 0.0, "target_mean": 0.0, "td_abs_mean": 0.0}
+    last_train = {
+        "loss": 0.0,
+        "q_mean": 0.0,
+        "target_mean": 0.0,
+        "td_abs_mean": 0.0,
+        "beta": "",
+        "is_weight_mean": 1.0,
+    }
     return_ema: float | None = None
 
     try:
@@ -196,9 +220,28 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
                 and global_step % train_freq == 0
                 and len(buffer) >= batch_size
             ):
-                batch = buffer.sample(batch_size)
-                last_train = agent.update(*batch)
-                for k, v in last_train.items():
+                beta_t = (
+                    linear_schedule(global_step, beta_start, beta_end, beta_anneal_steps)
+                    if prioritized
+                    else None
+                )
+                batch = buffer.sample(batch_size, beta=beta_t)
+                result = agent.update(
+                    batch.obs,
+                    batch.actions,
+                    batch.rewards,
+                    batch.next_obs,
+                    batch.dones,
+                    weights=batch.weights,
+                )
+                if prioritized:
+                    buffer.update_priorities(batch.indices, result.td_abs + priority_eps)
+                last_train = {
+                    **result.metrics,
+                    "beta": beta_t if prioritized else "",
+                    "is_weight_mean": float(np.mean(batch.weights)),
+                }
+                for k, v in result.metrics.items():
                     if not math.isfinite(v):
                         raise RuntimeError(f"Non-finite training metric {k}={v} at step {global_step}")
                 row = _base_train_row(

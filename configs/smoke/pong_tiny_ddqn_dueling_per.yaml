@@ -1,9 +1,9 @@
-# T1.3 smoke: dueling architecture, vanilla DQN target (no Double DQN).
+# T1.4 smoke: Double DQN + dueling + proportional PER (single trainer path).
 algorithm:
-  double_dqn: false
+  double_dqn: true
 
 experiment:
-  name: pong_tiny_dueling
+  name: pong_tiny_ddqn_dueling_per
   seed: 42
   device: auto
   output_root: artifacts
@@ -41,9 +41,9 @@ log:
   csv_flush_interval: 1
 
 replay:
-  prioritized: false
+  prioritized: true
   alpha: 0.6
   beta_start: 0.4
   beta_end: 1.0
-  beta_anneal_steps: 200000
+  beta_anneal_steps: 5000
   priority_eps: 1.0e-6

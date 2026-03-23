@@ -25,6 +25,8 @@ CSV_COLUMNS = [
     "epsilon",
     "eval_mean_return",
     "eval_std_return",
+    "beta",
+    "is_weight_mean",
 ]
 
 

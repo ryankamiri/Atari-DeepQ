@@ -3,16 +3,26 @@ Vanilla DQN trainer: MLP Q-network, uniform replay, target network, epsilon-gree
 T1.1: Huber loss, gradient clipping, structured update metrics.
 T1.2: optional Double DQN bootstrap target via config toggle.
 T1.3: optional dueling head via ``model.dueling`` (same trainer).
-Extensible for PER in later tickets.
+T1.4: optional PER via weighted Huber mean and ``UpdateResult.td_abs``.
 """
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 from src.nets import DuelingMLPQNetwork, MLPQNetwork
+
+
+@dataclass
+class UpdateResult:
+    """Output of one ``DQNAgent.update`` step."""
+
+    metrics: dict[str, float]
+    td_abs: np.ndarray
 
 
 def linear_schedule(step: int, start: float, end: float, decay_steps: int) -> float:
@@ -104,13 +114,15 @@ class DQNAgent:
         rewards: np.ndarray,
         next_obs: np.ndarray,
         dones: np.ndarray,
-    ) -> dict[str, float]:
+        weights: np.ndarray | None = None,
+    ) -> UpdateResult:
         """
-        One batch gradient step. Huber (smooth L1) loss, grad clip.
+        One batch gradient step. Huber (smooth L1) per-sample loss, weighted mean if ``weights`` set.
 
         Returns
         -------
-        dict with keys: loss, q_mean, target_mean, td_abs_mean (all finite floats).
+        UpdateResult with ``metrics`` (loss, q_mean, target_mean, td_abs_mean) and
+        per-sample ``td_abs`` (numpy float32) for PER priority updates.
         """
         o = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         a = torch.as_tensor(actions, dtype=torch.int64, device=self.device)
@@ -129,7 +141,12 @@ class DQNAgent:
             )
 
         q = self.q_net(o).gather(1, a.unsqueeze(1)).squeeze(1)
-        loss = nn.functional.smooth_l1_loss(q, target)
+        per_sample = nn.functional.smooth_l1_loss(q, target, reduction="none")
+        if weights is not None:
+            w = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
+            loss = (per_sample * w).sum() / w.sum().clamp_min(1e-8)
+        else:
+            loss = per_sample.mean()
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -138,14 +155,15 @@ class DQNAgent:
         self.optimizer.step()
 
         with torch.no_grad():
-            td_abs = (q.detach() - target).abs()
+            td_abs_t = (q.detach() - target).abs()
+            td_abs = td_abs_t.cpu().numpy().astype(np.float32)
             metrics = {
                 "loss": float(loss.item()),
                 "q_mean": float(q.detach().mean().item()),
                 "target_mean": float(target.mean().item()),
-                "td_abs_mean": float(td_abs.mean().item()),
+                "td_abs_mean": float(td_abs_t.mean().item()),
             }
-        return metrics
+        return UpdateResult(metrics=metrics, td_abs=td_abs)
 
     def sync_target(self):
         self.target_net.load_state_dict(self.q_net.state_dict())

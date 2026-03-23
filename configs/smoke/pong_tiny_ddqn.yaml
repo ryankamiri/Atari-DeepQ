@@ -39,3 +39,11 @@ eval:
 
 log:
   csv_flush_interval: 1
+
+replay:
+  prioritized: false
+  alpha: 0.6
+  beta_start: 0.4
+  beta_end: 1.0
+  beta_anneal_steps: 200000
+  priority_eps: 1.0e-6

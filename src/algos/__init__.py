@@ -1,3 +1,3 @@
-from .dqn import DQNAgent
+from .dqn import DQNAgent, UpdateResult
 
-__all__ = ["DQNAgent"]
+__all__ = ["DQNAgent", "UpdateResult"]

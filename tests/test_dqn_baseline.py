@@ -1,5 +1,5 @@
 """
-T1.1/T1.2/T1.3 tests: schedule, replay, DQN-family target math, dueling nets, update metrics, integration runs.
+T1.1-T1.4 tests: schedule, replay, DQN-family target math, dueling nets, PER, update metrics, integration runs.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import torch
 
 from src.algos.dqn import DQNAgent, compute_bootstrap_target, linear_schedule
 from src.nets import DuelingMLPQNetwork, MLPQNetwork, combine_dueling_streams
-from src.replay import ReplayBuffer
+from src.replay import PrioritizedReplayBuffer, ReplayBuffer
 from src.utils import set_global_seeds
 
 
@@ -76,12 +76,85 @@ def test_replay_buffer_sample_shapes_and_dtypes():
         s = np.random.rand(128).astype(np.float32)
         s2 = np.random.rand(128).astype(np.float32)
         buf.add(s, i % 6, float(i % 3 - 1), s2, i % 10 == 0)
-    o, a, r, no, d = buf.sample(32)
-    assert o.shape == (32, 128) and o.dtype == np.float32
-    assert a.shape == (32,) and a.dtype == np.int64
-    assert r.shape == (32,) and r.dtype == np.float32
-    assert no.shape == (32, 128) and no.dtype == np.float32
-    assert d.shape == (32,) and d.dtype == np.float32
+    batch = buf.sample(32)
+    assert batch.obs.shape == (32, 128) and batch.obs.dtype == np.float32
+    assert batch.actions.shape == (32,) and batch.actions.dtype == np.int64
+    assert batch.rewards.shape == (32,) and batch.rewards.dtype == np.float32
+    assert batch.next_obs.shape == (32, 128) and batch.next_obs.dtype == np.float32
+    assert batch.dones.shape == (32,) and batch.dones.dtype == np.float32
+    assert batch.indices.shape == (32,) and batch.indices.dtype == np.int64
+    assert batch.weights.shape == (32,) and batch.weights.dtype == np.float32
+
+
+def test_uniform_replay_returns_unit_weights():
+    buf = ReplayBuffer(50, obs_shape=(8,))
+    for _ in range(40):
+        buf.add(np.zeros(8, np.float32), 0, 0.0, np.zeros(8, np.float32), False)
+    b = buf.sample(16, beta=None)
+    assert np.allclose(b.weights, 1.0)
+
+
+def test_uniform_replay_update_priorities_is_noop():
+    buf = ReplayBuffer(20, obs_shape=(4,))
+    for i in range(15):
+        buf.add(np.ones(4, np.float32) * i, 0, 0.0, np.ones(4, np.float32), False)
+    np.random.seed(0)
+    counts_before = np.bincount(buf.sample(200).indices, minlength=20)
+    buf.update_priorities(np.array([0, 1], dtype=np.int64), np.array([1e9, 1e9], dtype=np.float32))
+    np.random.seed(0)
+    counts_after = np.bincount(buf.sample(200).indices, minlength=20)
+    assert np.array_equal(counts_before, counts_after)
+
+
+def test_per_sample_shapes_finite_normalized_weights():
+    buf = PrioritizedReplayBuffer(100, obs_shape=(16,), alpha=0.6)
+    for i in range(60):
+        buf.add(
+            np.random.randn(16).astype(np.float32),
+            i % 3,
+            0.0,
+            np.random.randn(16).astype(np.float32),
+            False,
+        )
+    batch = buf.sample(32, beta=0.5)
+    assert batch.obs.shape == (32, 16)
+    assert batch.indices.shape == (32,)
+    assert np.all(np.isfinite(batch.weights))
+    assert np.all(batch.weights > 0) and np.all(batch.weights <= 1.0 + 1e-5)
+    assert abs(float(np.max(batch.weights)) - 1.0) < 1e-4
+
+
+def test_per_priority_update_biases_sampling():
+    """After boosting one slot's raw priority, it is sampled far more often (seeded)."""
+    np.random.seed(123)
+    cap = 32
+    buf = PrioritizedReplayBuffer(cap, obs_shape=(4,), alpha=0.6)
+    for i in range(cap):
+        buf.add(np.full(4, float(i), np.float32), 0, 0.0, np.zeros(4, np.float32), False)
+    buf.update_priorities(np.array([7], dtype=np.int64), np.array([1000.0], dtype=np.float64))
+    np.random.seed(42)
+    n = 8000
+    batch = buf.sample(n, beta=0.4)
+    frac_7 = np.mean(batch.indices == 7)
+    # uniform would be about 1/cap
+    assert frac_7 > 3.0 / cap, f"expected strong bias toward index 7, got frac={frac_7}"
+
+
+def test_per_importance_weights_use_global_normalization_not_batch_max():
+    """
+    If a high-priority item is sampled while lower-probability items exist elsewhere in replay,
+    its normalized IS weight should be strictly below 1.0.
+    """
+    buf = PrioritizedReplayBuffer(16, obs_shape=(4,), alpha=0.6)
+    for _ in range(16):
+        z = np.zeros(4, dtype=np.float32)
+        buf.add(z, 0, 0.0, z, False)
+    buf.update_priorities(np.array([7], dtype=np.int64), np.array([1000.0], dtype=np.float64))
+
+    np.random.seed(0)
+    batch = buf.sample(1, beta=0.4)
+    assert int(batch.indices[0]) == 7
+    assert 0.0 < float(batch.weights[0]) < 1.0
 
 
 def test_compute_bootstrap_target_vanilla_vs_double_dqn():
@@ -126,13 +199,46 @@ def test_dqn_update_returns_required_metrics_and_finite(double_dqn: bool, duelin
     rewards = np.random.randn(bs).astype(np.float32) * 0.1
     dones = np.zeros(bs, dtype=np.float32)
     before = {n: p.clone() for n, p in agent.q_net.named_parameters()}
-    m = agent.update(obs, actions, rewards, next_obs, dones)
+    result = agent.update(obs, actions, rewards, next_obs, dones)
+    m = result.metrics
     required = {"loss", "q_mean", "target_mean", "td_abs_mean"}
     assert set(m.keys()) == required
     for k, v in m.items():
         assert isinstance(v, float) and np.isfinite(v), f"{k}={v}"
+    assert result.td_abs.shape == (bs,) and result.td_abs.dtype == np.float32
+    assert np.all(np.isfinite(result.td_abs))
     changed = any(not torch.equal(before[n], p) for n, p in agent.q_net.named_parameters())
     assert changed, "optimizer should have updated weights"
+
+
+@pytest.mark.parametrize("double_dqn", [False, True])
+@pytest.mark.parametrize("dueling", [False, True])
+def test_dqn_update_with_importance_weights_all_modes(double_dqn: bool, dueling: bool):
+    device = torch.device("cpu")
+    agent = DQNAgent(
+        obs_dim=8,
+        n_actions=4,
+        hidden_dims=[32, 32],
+        device=device,
+        gamma=0.99,
+        lr=1e-3,
+        grad_clip_norm=10.0,
+        double_dqn=double_dqn,
+        dueling=dueling,
+    )
+    bs = 16
+    obs = np.random.rand(bs, 8).astype(np.float32)
+    next_obs = np.random.rand(bs, 8).astype(np.float32)
+    actions = np.random.randint(0, 4, size=bs, dtype=np.int64)
+    rewards = np.random.randn(bs).astype(np.float32) * 0.1
+    dones = np.zeros(bs, dtype=np.float32)
+    w = np.random.uniform(0.2, 1.0, size=bs).astype(np.float32)
+    w = w / float(np.max(w))
+    result = agent.update(obs, actions, rewards, next_obs, dones, weights=w)
+    assert result.td_abs.shape == (bs,)
+    assert np.all(np.isfinite(result.td_abs))
+    for k, v in result.metrics.items():
+        assert np.isfinite(v), f"{k}={v}"
 
 
 def test_sync_target_copies_q_weights_exactly():
@@ -339,6 +445,77 @@ log:
     assert len(runs) == 1
     run_dir = runs[0]
     assert (run_dir / "metrics.csv").exists()
+    assert (run_dir / "checkpoints" / "latest.pt").exists()
+    eval_files = list((run_dir / "eval").glob("*.json"))
+    assert len(eval_files) >= 1
+
+
+@pytest.mark.integration
+def test_ddqn_dueling_per_smoke_run_produces_artifacts(tmp_path):
+    """T1.4: PER + Double DQN + dueling on single trainer path."""
+    repo = Path(__file__).resolve().parent.parent
+    yaml_text = f"""
+algorithm:
+  double_dqn: true
+replay:
+  prioritized: true
+  alpha: 0.6
+  beta_start: 0.4
+  beta_end: 1.0
+  beta_anneal_steps: 4000
+  priority_eps: 1.0e-6
+experiment:
+  name: t1_4_per_integration
+  seed: 0
+  device: cpu
+  output_root: {tmp_path.as_posix()}
+env:
+  id: ALE/Pong-ram-v5
+model:
+  hidden_dims: [32, 32]
+  dueling: true
+train:
+  total_steps: 2500
+  batch_size: 32
+  replay_capacity: 5000
+  learning_starts: 500
+  train_freq: 4
+  gamma: 0.99
+  lr: 1e-3
+  target_update_interval: 200
+  checkpoint_interval: 2500
+  grad_clip_norm: 10.0
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  decay_steps: 2000
+eval:
+  eval_interval: 1000
+  n_episodes: 1
+  epsilon_eval: 0.05
+log:
+  csv_flush_interval: 1
+"""
+    cfg_path = tmp_path / "mini_per.yaml"
+    cfg_path.write_text(yaml_text)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "run_experiment.py"), "--config", str(cfg_path)],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    runs = list(tmp_path.glob("runs/*/"))
+    assert len(runs) == 1
+    run_dir = runs[0]
+    assert (run_dir / "metrics.csv").exists()
+    text = (run_dir / "metrics.csv").read_text()
+    assert "beta" in text.splitlines()[0]
+    assert "is_weight_mean" in text.splitlines()[0]
     assert (run_dir / "checkpoints" / "latest.pt").exists()
     eval_files = list((run_dir / "eval").glob("*.json"))
     assert len(eval_files) >= 1
