@@ -1,5 +1,13 @@
-# Full Pong DQN baseline template (2M steps, eval every 50k, 20 episodes).
-# Run with different seeds for 3-seed comparison.
+# Provisional full Pong RAM vanilla DQN baseline candidate.
+#
+# Current evidence from bounded T1.1 tuning:
+# - The tracked 200k config with lr=2.5e-4 / learning_starts=20000 / decay_steps=500000
+#   stayed flat at -21.0 by the final eval.
+# - The most promising quick candidate so far reached -20.4 at 70k steps, using
+#   lr=1e-4 / learning_starts=10000 / decay_steps=250000, but still regressed to -21.0
+#   by the end of the 100k quick run.
+#
+# Keep this config as the next full-run candidate, not a frozen winner.
 experiment:
   name: pong_dqn
   seed: 42
@@ -19,14 +27,15 @@ train:
   learning_starts: 10000
   train_freq: 4
   gamma: 0.99
-  lr: 2.5e-4
+  lr: 1.0e-4
   target_update_interval: 1000
   checkpoint_interval: 50000
+  grad_clip_norm: 10.0
 
 exploration:
   epsilon_start: 1.0
   epsilon_end: 0.05
-  decay_steps: 1000000
+  decay_steps: 250000
 
 eval:
   eval_interval: 50000
@@ -35,3 +44,4 @@ eval:
 
 log:
   csv_flush_interval: 10
+  episode_return_ema_alpha: 0.1

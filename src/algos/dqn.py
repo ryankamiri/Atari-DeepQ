@@ -1,5 +1,6 @@
 """
 Vanilla DQN trainer: MLP Q-network, uniform replay, target network, epsilon-greedy.
+T1.1: Huber loss, gradient clipping, structured update metrics.
 Extensible for Double DQN, dueling, PER in later tickets.
 """
 from __future__ import annotations
@@ -34,11 +35,13 @@ class DQNAgent:
         gamma: float = 0.99,
         lr: float = 2.5e-4,
         target_update_interval: int = 1000,
+        grad_clip_norm: float = 10.0,
     ):
         self.obs_dim = obs_dim
         self.n_actions = n_actions
         self.gamma = gamma
         self.target_update_interval = target_update_interval
+        self.grad_clip_norm = grad_clip_norm
         self.device = device
 
         self.q_net = MLPQNetwork(obs_dim, n_actions, hidden_dims).to(device)
@@ -61,8 +64,14 @@ class DQNAgent:
         rewards: np.ndarray,
         next_obs: np.ndarray,
         dones: np.ndarray,
-    ) -> float:
-        """One batch gradient step. Returns mean TD loss."""
+    ) -> dict[str, float]:
+        """
+        One batch gradient step. Huber (smooth L1) loss, grad clip.
+
+        Returns
+        -------
+        dict with keys: loss, q_mean, target_mean, td_abs_mean (all finite floats).
+        """
         o = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         a = torch.as_tensor(actions, dtype=torch.int64, device=self.device)
         r = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
@@ -74,12 +83,23 @@ class DQNAgent:
             target = r + self.gamma * (1 - d) * next_q
 
         q = self.q_net(o).gather(1, a.unsqueeze(1)).squeeze(1)
-        loss = nn.functional.mse_loss(q, target)
+        loss = nn.functional.smooth_l1_loss(q, target)
 
         self.optimizer.zero_grad()
         loss.backward()
+        if self.grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), self.grad_clip_norm)
         self.optimizer.step()
-        return float(loss.item())
+
+        with torch.no_grad():
+            td_abs = (q.detach() - target).abs()
+            metrics = {
+                "loss": float(loss.item()),
+                "q_mean": float(q.detach().mean().item()),
+                "target_mean": float(target.mean().item()),
+                "td_abs_mean": float(td_abs.mean().item()),
+            }
+        return metrics
 
     def sync_target(self):
         self.target_net.load_state_dict(self.q_net.state_dict())

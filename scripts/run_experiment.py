@@ -6,6 +6,7 @@ Usage: python scripts/run_experiment.py --config <path> [--resume <ckpt>]
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from src.utils import (
     load_checkpoint,
     save_checkpoint,
     RunLogger,
+    set_global_seeds,
 )
 
 
@@ -48,6 +50,32 @@ def get_run_dir(config: dict | None, resume_path: Path | None = None) -> Path:
     return out / "runs" / f"{ts}_{name}_seed{seed}"
 
 
+def _base_train_row(
+    global_step: int,
+    episode_count: int,
+    episode_return: float,
+    episode_length: int,
+    epsilon: float,
+    last_train: dict[str, float],
+    buffer_size: int,
+    return_ema: float | None,
+) -> dict:
+    row = {
+        "global_step": global_step,
+        "episode": episode_count,
+        "train_return": episode_return,
+        "train_episode_length": episode_length,
+        "epsilon": epsilon,
+        "loss": last_train["loss"],
+        "q_mean": last_train["q_mean"],
+        "target_mean": last_train["target_mean"],
+        "td_abs_mean": last_train["td_abs_mean"],
+        "buffer_size": buffer_size,
+        "episode_return_moving_avg": return_ema if return_ema is not None else "",
+    }
+    return row
+
+
 def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     exp = config["experiment"]
     env_cfg = config["env"]
@@ -61,6 +89,7 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     seed = exp["seed"]
     env_id = env_cfg["id"]
 
+    set_global_seeds(seed)
     ensure_run_metadata(run_dir, config)
 
     env = make_env(env_id, seed=seed, eval_mode=False)
@@ -69,22 +98,24 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     env.close()
 
     hidden_dims = model_cfg.get("hidden_dims", [256, 256])
-    replay_capacity = train_cfg["replay_capacity"]
-    batch_size = train_cfg["batch_size"]
-    learning_starts = train_cfg["learning_starts"]
-    train_freq = train_cfg["train_freq"]
-    total_steps = train_cfg["total_steps"]
-    gamma = train_cfg["gamma"]
-    lr = train_cfg["lr"]
-    target_update_interval = train_cfg["target_update_interval"]
-    checkpoint_interval = train_cfg["checkpoint_interval"]
-    eval_interval = eval_cfg["eval_interval"]
-    n_episodes_eval = eval_cfg["n_episodes"]
-    epsilon_eval = eval_cfg["epsilon_eval"]
-    epsilon_start = explore_cfg["epsilon_start"]
-    epsilon_end = explore_cfg["epsilon_end"]
-    decay_steps = explore_cfg["decay_steps"]
+    replay_capacity = int(train_cfg["replay_capacity"])
+    batch_size = int(train_cfg["batch_size"])
+    learning_starts = int(train_cfg["learning_starts"])
+    train_freq = int(train_cfg["train_freq"])
+    total_steps = int(train_cfg["total_steps"])
+    gamma = float(train_cfg["gamma"])
+    lr = float(train_cfg["lr"])
+    target_update_interval = int(train_cfg["target_update_interval"])
+    checkpoint_interval = int(train_cfg["checkpoint_interval"])
+    grad_clip_norm = float(train_cfg.get("grad_clip_norm", 10.0))
+    eval_interval = int(eval_cfg["eval_interval"])
+    n_episodes_eval = int(eval_cfg["n_episodes"])
+    epsilon_eval = float(eval_cfg["epsilon_eval"])
+    epsilon_start = float(explore_cfg["epsilon_start"])
+    epsilon_end = float(explore_cfg["epsilon_end"])
+    decay_steps = int(explore_cfg["decay_steps"])
     csv_flush = log_cfg.get("csv_flush_interval", 1)
+    ema_alpha = float(log_cfg.get("episode_return_ema_alpha", 0.1))
 
     buffer = ReplayBuffer(replay_capacity, obs_shape=(obs_dim,))
     agent = DQNAgent(
@@ -95,6 +126,7 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
         gamma=gamma,
         lr=lr,
         target_update_interval=target_update_interval,
+        grad_clip_norm=grad_clip_norm,
     )
 
     global_step = 0
@@ -114,7 +146,8 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     obs, _ = env.reset()
     episode_return = 0.0
     episode_length = 0
-    last_loss = 0.0
+    last_train = {"loss": 0.0, "q_mean": 0.0, "target_mean": 0.0, "td_abs_mean": 0.0}
+    return_ema: float | None = None
 
     try:
         while global_step < total_steps:
@@ -127,16 +160,24 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
             episode_length += 1
             obs = next_obs
 
+            buf_len = len(buffer)
+
             if done:
                 episode_count += 1
-                row = {
-                    "global_step": global_step,
-                    "episode": episode_count,
-                    "train_return": episode_return,
-                    "train_episode_length": episode_length,
-                    "loss": last_loss,
-                    "epsilon": epsilon,
-                }
+                if return_ema is None:
+                    return_ema = episode_return
+                else:
+                    return_ema = ema_alpha * episode_return + (1.0 - ema_alpha) * return_ema
+                row = _base_train_row(
+                    global_step,
+                    episode_count,
+                    episode_return,
+                    episode_length,
+                    epsilon,
+                    last_train,
+                    buf_len,
+                    return_ema,
+                )
                 logger.log_metrics(row, global_step)
                 obs, _ = env.reset()
                 episode_return = 0.0
@@ -150,15 +191,20 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
                 and len(buffer) >= batch_size
             ):
                 batch = buffer.sample(batch_size)
-                last_loss = agent.update(*batch)
-                row = {
-                    "global_step": global_step,
-                    "episode": episode_count,
-                    "train_return": episode_return,
-                    "train_episode_length": episode_length,
-                    "loss": last_loss,
-                    "epsilon": epsilon,
-                }
+                last_train = agent.update(*batch)
+                for k, v in last_train.items():
+                    if not math.isfinite(v):
+                        raise RuntimeError(f"Non-finite training metric {k}={v} at step {global_step}")
+                row = _base_train_row(
+                    global_step,
+                    episode_count,
+                    episode_return,
+                    episode_length,
+                    epsilon,
+                    last_train,
+                    len(buffer),
+                    return_ema,
+                )
                 logger.log_metrics(row, global_step)
 
             if global_step % target_update_interval == 0 and global_step >= learning_starts:
@@ -173,16 +219,18 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
                     seed=seed + 1,
                     output_path=str(eval_dir / f"eval_step_{global_step}.json"),
                 )
-                row = {
-                    "global_step": global_step,
-                    "episode": episode_count,
-                    "train_return": episode_return,
-                    "train_episode_length": episode_length,
-                    "loss": last_loss,
-                    "epsilon": epsilon,
-                    "eval_mean_return": summary["mean_return"],
-                    "eval_std_return": summary["std_return"],
-                }
+                row = _base_train_row(
+                    global_step,
+                    episode_count,
+                    episode_return,
+                    episode_length,
+                    epsilon,
+                    last_train,
+                    len(buffer),
+                    return_ema,
+                )
+                row["eval_mean_return"] = summary["mean_return"]
+                row["eval_std_return"] = summary["std_return"]
                 logger.log_metrics(row, global_step)
 
             if checkpoint_interval and global_step % checkpoint_interval == 0:

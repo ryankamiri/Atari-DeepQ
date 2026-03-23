@@ -1,0 +1,46 @@
+# T1.1 bounded tuning: Pong RAM vanilla DQN (single seed, fast eval cadence).
+# Use this as the tracked tuning template for the fixed grid over lr, learning_starts, decay_steps.
+# The defaults below reflect the most promising quick candidate observed so far, not a proven winner.
+#
+# Tuning grid (run each as a separate run with only these three fields changed):
+#   lr: [1e-4, 2.5e-4]
+#   learning_starts: [10000, 20000]
+#   decay_steps: [250000, 500000, 1000000]
+experiment:
+  name: pong_dqn_tune
+  seed: 42
+  device: auto
+  output_root: artifacts
+
+env:
+  id: ALE/Pong-ram-v5
+
+model:
+  hidden_dims: [256, 256]
+
+train:
+  total_steps: 200000
+  batch_size: 32
+  replay_capacity: 100000
+  learning_starts: 10000
+  train_freq: 4
+  gamma: 0.99
+  lr: 1.0e-4
+  target_update_interval: 1000
+  checkpoint_interval: 50000
+  grad_clip_norm: 10.0
+
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  decay_steps: 250000
+
+eval:
+  eval_interval: 10000
+  n_episodes: 5
+  epsilon_eval: 0.05
+
+log:
+  csv_flush_interval: 10
+  # EMA of completed episode train returns (for curves)
+  episode_return_ema_alpha: 0.1
