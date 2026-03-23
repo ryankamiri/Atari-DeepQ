@@ -8,3 +8,4 @@ tensorboard
 pandas
 tqdm
 pytest
+matplotlib

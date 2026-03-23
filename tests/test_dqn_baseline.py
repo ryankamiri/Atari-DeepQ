@@ -1,5 +1,5 @@
 """
-T1.1-T1.4 tests: schedule, replay, DQN-family target math, dueling nets, PER, update metrics, integration runs.
+T1.1-T1.5 tests: schedule, replay, DQN-family target math, dueling nets, PER, runner overrides, plotting, integration runs.
 """
 from __future__ import annotations
 
@@ -519,3 +519,179 @@ log:
     assert (run_dir / "checkpoints" / "latest.pt").exists()
     eval_files = list((run_dir / "eval").glob("*.json"))
     assert len(eval_files) >= 1
+
+
+@pytest.mark.integration
+def test_run_experiment_seed_override_updates_snapshot_and_run_dir(tmp_path):
+    repo = Path(__file__).resolve().parent.parent
+    yaml_text = f"""
+algorithm:
+  double_dqn: false
+experiment:
+  name: seed_override_check
+  seed: 42
+  device: cpu
+  output_root: {tmp_path.as_posix()}
+env:
+  id: ALE/Pong-ram-v5
+model:
+  hidden_dims: [32, 32]
+  dueling: false
+train:
+  total_steps: 800
+  batch_size: 32
+  replay_capacity: 2000
+  learning_starts: 200
+  train_freq: 4
+  gamma: 0.99
+  lr: 1e-3
+  target_update_interval: 100
+  checkpoint_interval: 800
+  grad_clip_norm: 10.0
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  decay_steps: 600
+eval:
+  eval_interval: 400
+  n_episodes: 1
+  epsilon_eval: 0.05
+log:
+  csv_flush_interval: 1
+replay:
+  prioritized: false
+  alpha: 0.6
+  beta_start: 0.4
+  beta_end: 1.0
+  beta_anneal_steps: 200000
+  priority_eps: 1.0e-6
+"""
+    cfg_path = tmp_path / "seed_base.yaml"
+    cfg_path.write_text(yaml_text)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "run_experiment.py"),
+            "--config",
+            str(cfg_path),
+            "--seed",
+            "44",
+        ],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    runs = list(tmp_path.glob("runs/*seed44/"))
+    assert len(runs) == 1
+    run_dir = runs[0]
+    snapshot = (run_dir / "config.yaml").read_text()
+    assert "seed: 44" in snapshot
+
+
+def test_plot_results_synthetic_aggregation_outputs(tmp_path):
+    pytest.importorskip("matplotlib")
+    repo = Path(__file__).resolve().parent.parent
+    runs_root = tmp_path / "runs"
+    out_dir = tmp_path / "figs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    def _make_run(name: str, env_id: str, variant: str, seed: int, complete: bool):
+        run_dir = runs_root / name
+        eval_dir = run_dir / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "experiment": {"name": name, "seed": seed, "device": "cpu", "output_root": "artifacts"},
+            "env": {"id": env_id},
+            "train": {"total_steps": 2_000_000},
+            "eval": {"eval_interval": 50_000, "n_episodes": 20, "epsilon_eval": 0.05},
+            "algorithm": {"double_dqn": variant != "DQN"},
+            "model": {"dueling": variant != "DQN"},
+            "replay": {"prioritized": variant != "DQN"},
+        }
+        (run_dir / "config.yaml").write_text(json.dumps(cfg))
+        steps = [50_000, 100_000, 2_000_000] if complete else [50_000, 100_000]
+        for step in steps:
+            payload = {
+                "env_id": env_id,
+                "n_episodes": 20,
+                "mean_return": float(seed + step / 100_000.0),
+                "std_return": 1.0,
+            }
+            (eval_dir / f"eval_step_{step}.json").write_text(json.dumps(payload))
+
+    # complete runs (include two seeds for Pong DQN, one for other combinations)
+    _make_run("pong_dqn_seed42", "ALE/Pong-ram-v5", "DQN", 42, True)
+    _make_run("pong_dqn_seed43", "ALE/Pong-ram-v5", "DQN", 43, True)
+    _make_run("pong_per_seed42", "ALE/Pong-ram-v5", "PER", 42, True)
+    _make_run("breakout_dqn_seed42", "ALE/Breakout-ram-v5", "DQN", 42, True)
+    _make_run("breakout_per_seed42", "ALE/Breakout-ram-v5", "PER", 42, True)
+    _make_run("boxing_dqn_seed42", "ALE/Boxing-ram-v5", "DQN", 42, True)
+    _make_run("boxing_per_seed42", "ALE/Boxing-ram-v5", "PER", 42, True)
+    # incomplete run should be skipped
+    _make_run("pong_dqn_incomplete", "ALE/Pong-ram-v5", "DQN", 44, False)
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "plot_results.py"),
+            "--runs-root",
+            str(runs_root),
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert (out_dir / "learning_curve_pong.png").exists()
+    assert (out_dir / "learning_curve_breakout.png").exists()
+    assert (out_dir / "learning_curve_boxing.png").exists()
+    assert (out_dir / "online_final_eval_table.csv").exists()
+    assert (out_dir / "online_final_eval_table.md").exists()
+    summary_path = out_dir / "online_matrix_summary.json"
+    assert summary_path.exists()
+    summary = json.loads(summary_path.read_text())
+    included = [r["run_dir"] for r in summary["runs_included"]]
+    assert not any("incomplete" in p for p in included)
+
+
+def test_plot_results_no_matching_runs_writes_status_outputs(tmp_path):
+    repo = Path(__file__).resolve().parent.parent
+    runs_root = tmp_path / "runs"
+    out_dir = tmp_path / "figs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "plot_results.py"),
+            "--runs-root",
+            str(runs_root),
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "No completed full-protocol headline runs were found" in r.stdout
+    assert not any(out_dir.glob("learning_curve_*.png"))
+    summary = json.loads((out_dir / "online_matrix_summary.json").read_text())
+    assert summary["status"] == "no_completed_runs"
+    md_text = (out_dir / "online_final_eval_table.md").read_text()
+    assert "No completed full-protocol headline runs were found." in md_text

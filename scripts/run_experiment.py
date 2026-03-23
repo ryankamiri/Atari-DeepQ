@@ -6,6 +6,7 @@ Usage: python scripts/run_experiment.py --config <path> [--resume <ckpt>]
 from __future__ import annotations
 
 import argparse
+import copy
 import math
 import sys
 
@@ -316,9 +317,13 @@ def main():
     parser = argparse.ArgumentParser(description="Run DQN training from YAML config.")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config.")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint (e.g. .../checkpoints/latest.pt).")
+    parser.add_argument("--seed", type=int, default=None, help="Optional override for experiment.seed.")
     args = parser.parse_args()
 
     resume_path = Path(args.resume) if args.resume else None
+    if resume_path is not None and args.seed is not None:
+        raise ValueError("--seed override is not supported with --resume.")
+
     if resume_path is not None:
         run_dir = get_run_dir(None, resume_path)
         config_path = run_dir / "config.yaml"
@@ -327,7 +332,10 @@ def main():
         else:
             config = load_config(args.config)
     else:
-        config = load_config(args.config)
+        config = copy.deepcopy(load_config(args.config))
+        if args.seed is not None:
+            config.setdefault("experiment", {})
+            config["experiment"]["seed"] = int(args.seed)
         run_dir = get_run_dir(config, None)
     run_training(config, run_dir, resume_path)
 
