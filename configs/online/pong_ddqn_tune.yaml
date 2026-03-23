@@ -1,16 +1,9 @@
-# T1.1 bounded tuning: Pong RAM vanilla DQN (single seed, fast eval cadence).
+# T1.2 bounded validation: same settings as pong_dqn_tune.yaml, Double DQN target.
 algorithm:
-  double_dqn: false
+  double_dqn: true
 
-# Use this as the tracked tuning template for the fixed grid over lr, learning_starts, decay_steps.
-# The defaults below reflect the most promising quick candidate observed so far, not a proven winner.
-#
-# Tuning grid (run each as a separate run with only these three fields changed):
-#   lr: [1e-4, 2.5e-4]
-#   learning_starts: [10000, 20000]
-#   decay_steps: [250000, 500000, 1000000]
 experiment:
-  name: pong_dqn_tune
+  name: pong_ddqn_tune
   seed: 42
   device: auto
   output_root: artifacts
@@ -46,5 +39,4 @@ eval:
 
 log:
   csv_flush_interval: 10
-  # EMA of completed episode train returns (for curves)
   episode_return_ema_alpha: 0.1

@@ -98,6 +98,7 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     env.close()
 
     hidden_dims = model_cfg.get("hidden_dims", [256, 256])
+    dueling = bool(model_cfg.get("dueling", False))
     replay_capacity = int(train_cfg["replay_capacity"])
     batch_size = int(train_cfg["batch_size"])
     learning_starts = int(train_cfg["learning_starts"])
@@ -117,6 +118,9 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
     csv_flush = log_cfg.get("csv_flush_interval", 1)
     ema_alpha = float(log_cfg.get("episode_return_ema_alpha", 0.1))
 
+    alg_cfg = config.get("algorithm") or {}
+    double_dqn = bool(alg_cfg.get("double_dqn", False))
+
     buffer = ReplayBuffer(replay_capacity, obs_shape=(obs_dim,))
     agent = DQNAgent(
         obs_dim=obs_dim,
@@ -127,6 +131,8 @@ def run_training(config: dict, run_dir: Path, resume_path: Path | None = None):
         lr=lr,
         target_update_interval=target_update_interval,
         grad_clip_norm=grad_clip_norm,
+        double_dqn=double_dqn,
+        dueling=dueling,
     )
 
     global_step = 0
