@@ -3,6 +3,7 @@ T1.1-T1.5 tests: schedule, replay, DQN-family target math, dueling nets, PER, ru
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -12,11 +13,44 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from src.algos.dqn import DQNAgent, compute_bootstrap_target, linear_schedule
 from src.nets import DuelingMLPQNetwork, MLPQNetwork, combine_dueling_streams
 from src.replay import PrioritizedReplayBuffer, ReplayBuffer
 from src.utils import set_global_seeds
+
+
+def _load_plot_results_module():
+    repo = Path(__file__).resolve().parent.parent
+    path = repo / "scripts" / "plot_results.py"
+    mod_name = "plot_results_t16"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize(
+    "dd, duel, per, expected",
+    [
+        (True, True, True, "DDQN+Dueling+PER"),
+        (True, True, False, "DDQN+Dueling"),
+        (True, False, True, "DDQN+PER"),
+        (True, False, False, None),
+        (False, True, True, None),
+    ],
+)
+def test_infer_ablation_variant_breakout_stack(dd: bool, duel: bool, per: bool, expected: str | None):
+    pr = _load_plot_results_module()
+    cfg = {
+        "algorithm": {"double_dqn": dd},
+        "model": {"dueling": duel},
+        "replay": {"prioritized": per},
+    }
+    assert pr.infer_ablation_variant(cfg) == expected
 
 
 def test_combine_dueling_streams_matches_v_plus_centered_advantage():
@@ -663,6 +697,124 @@ def test_plot_results_synthetic_aggregation_outputs(tmp_path):
     summary = json.loads(summary_path.read_text())
     included = [r["run_dir"] for r in summary["runs_included"]]
     assert not any("incomplete" in p for p in included)
+
+
+def test_plot_results_breakout_ablation_synthetic_outputs(tmp_path):
+    pytest.importorskip("matplotlib")
+    repo = Path(__file__).resolve().parent.parent
+    runs_root = tmp_path / "runs"
+    out_dir = tmp_path / "abl"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    def _write_breakout_run(name: str, dd: bool, duel: bool, per: bool, seed: int, complete: bool):
+        run_dir = runs_root / name
+        eval_dir = run_dir / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "experiment": {"name": name, "seed": seed, "device": "cpu", "output_root": "artifacts"},
+            "env": {"id": "ALE/Breakout-ram-v5"},
+            "train": {"total_steps": 2_000_000},
+            "eval": {"eval_interval": 50_000, "n_episodes": 20, "epsilon_eval": 0.05},
+            "algorithm": {"double_dqn": dd},
+            "model": {"dueling": duel},
+            "replay": {"prioritized": per},
+        }
+        (run_dir / "config.yaml").write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False))
+        steps = [50_000, 2_000_000] if complete else [50_000]
+        for step in steps:
+            mean_return = float(10 * seed + (0.5 if per else 0) + (0.25 if duel else 0) + step / 1_000_000)
+            payload = {"mean_return": mean_return, "n_episodes": 20}
+            (eval_dir / f"eval_step_{step}.json").write_text(json.dumps(payload))
+
+    for seed in (42, 43, 44):
+        _write_breakout_run(f"bo_main_{seed}", True, True, True, seed, True)
+        _write_breakout_run(f"bo_duel_{seed}", True, True, False, seed, True)
+        _write_breakout_run(f"bo_per_{seed}", True, False, True, seed, True)
+    _write_breakout_run("bo_incomplete", True, True, True, 99, False)
+    _write_breakout_run("pong_main_wrong_env", True, True, True, 42, True)
+    (runs_root / "pong_main_wrong_env" / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "experiment": {"name": "x", "seed": 42, "device": "cpu", "output_root": "artifacts"},
+                "env": {"id": "ALE/Pong-ram-v5"},
+                "train": {"total_steps": 2_000_000},
+                "eval": {"eval_interval": 50_000, "n_episodes": 20, "epsilon_eval": 0.05},
+                "algorithm": {"double_dqn": True},
+                "model": {"dueling": True},
+                "replay": {"prioritized": True},
+            },
+            default_flow_style=False,
+            sort_keys=False,
+        )
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "plot_results.py"),
+            "--report",
+            "breakout_ablation",
+            "--runs-root",
+            str(runs_root),
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert (out_dir / "breakout_ablation_curves.png").exists()
+    assert (out_dir / "breakout_ablation_final_table.csv").exists()
+    assert (out_dir / "breakout_ablation_final_table.md").exists()
+    summary = json.loads((out_dir / "breakout_ablation_summary.json").read_text())
+    assert summary["report"] == "breakout_ablation"
+    assert summary["status"] == "complete"
+    assert summary["group_counts"]["DDQN+Dueling+PER"] == 3
+    assert summary["group_counts"]["DDQN+Dueling"] == 3
+    assert summary["group_counts"]["DDQN+PER"] == 3
+    assert len(summary["runs_included"]) == 9
+    dirs = {Path(x["run_dir"]).name for x in summary["runs_included"]}
+    assert "bo_incomplete" not in dirs
+    assert "pong_main_wrong_env" not in dirs
+
+
+def test_plot_results_breakout_ablation_no_matching_runs_writes_status_outputs(tmp_path):
+    repo = Path(__file__).resolve().parent.parent
+    runs_root = tmp_path / "runs"
+    out_dir = tmp_path / "abl"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "plot_results.py"),
+            "--report",
+            "breakout_ablation",
+            "--runs-root",
+            str(runs_root),
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "No completed full-protocol Breakout ablation runs were found" in r.stdout
+    assert not (out_dir / "breakout_ablation_curves.png").exists()
+    summary = json.loads((out_dir / "breakout_ablation_summary.json").read_text())
+    assert summary["status"] == "no_completed_runs"
+    md_text = (out_dir / "breakout_ablation_final_table.md").read_text()
+    assert "No completed full-protocol Breakout ablation runs were found." in md_text
 
 
 def test_plot_results_no_matching_runs_writes_status_outputs(tmp_path):
