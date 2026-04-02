@@ -1,0 +1,30 @@
+experiment:
+  name: boxing_bc_random
+  seed: 0
+  device: auto
+  output_root: artifacts
+env:
+  id: ALE/Boxing-ram-v5
+model:
+  hidden_dims:
+  - 256
+  - 256
+  dueling: false
+algorithm:
+  double_dqn: false
+offline:
+  method: bc
+  dataset_path: artifacts/offline_data/boxing/random.npz
+train:
+  total_steps: 50000
+  batch_size: 256
+  lr: 0.001
+  gamma: 0.99
+  grad_clip_norm: 10.0
+  target_update_interval: 1000
+  checkpoint_interval: 50000
+  log_interval: 2000
+eval:
+  eval_interval: 10000
+  n_episodes: 20
+  epsilon_eval: 0.05
