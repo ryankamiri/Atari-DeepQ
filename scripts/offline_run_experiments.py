@@ -194,12 +194,46 @@ def main() -> None:
         print("Aborted.")
         return
 
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print("Installing tqdm...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "tqdm", "-q"])
+        from tqdm import tqdm
+
     t0 = time.time()
     results = []
+    elapsed_times = []
 
     with Pool(processes=args.workers) as pool:
-        for result in pool.imap_unordered(run_job, jobs):
-            results.append(result)
+        with tqdm(
+            total=len(jobs),
+            desc="Offline runs",
+            unit="run",
+            ncols=90,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+        ) as pbar:
+            for result in pool.imap_unordered(run_job, jobs):
+                results.append(result)
+                elapsed_times.append(result["elapsed"])
+
+                # Update progress bar postfix with live stats
+                n_done = len(results)
+                n_ok   = sum(1 for r in results if r["success"])
+                n_fail = n_done - n_ok
+                avg    = sum(elapsed_times) / len(elapsed_times)
+
+                # Estimate remaining time accounting for parallelism
+                remaining_jobs = len(jobs) - n_done
+                eta_sec = (remaining_jobs / args.workers) * avg
+
+                pbar.set_postfix({
+                    "ok":    n_ok,
+                    "fail":  n_fail,
+                    "avg":   f"{avg:.0f}s",
+                    "ETA":   f"{eta_sec/60:.1f}m",
+                })
+                pbar.update(1)
 
     total = time.time() - t0
     n_ok   = sum(1 for r in results if r["success"])
@@ -209,6 +243,7 @@ def main() -> None:
     print(f"Batch complete in {total/60:.1f} min")
     print(f"  Succeeded: {n_ok}/{len(results)}")
     print(f"  Failed:    {n_fail}/{len(results)}")
+    print(f"  Avg time per run: {sum(elapsed_times)/len(elapsed_times):.0f}s")
 
     if n_fail > 0:
         print("\nFailed jobs:")
