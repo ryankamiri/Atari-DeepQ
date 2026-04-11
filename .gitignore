@@ -116,6 +116,34 @@ artifacts/runs/
 artifacts/figures/
 
 # -----------------------------
+# Zip archives / partner deliverables
+# -----------------------------
+*.zip
+
+# -----------------------------
+# LaTeX proposal (source lives outside version control)
+# -----------------------------
+docs/proposal.tex
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.out
+
+# -----------------------------
+# Local presentation / study notes
+# -----------------------------
+PRESENTATION_GUIDE.md
+
+# -----------------------------
+# Unzipped partner folders
+# -----------------------------
+combined/
+Archive/
+
+# -----------------------------
 # Optional local caches
 # -----------------------------
 .cache/
